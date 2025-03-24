@@ -4,6 +4,7 @@
 
 Driver fatigue is one of the leading causes of road accidents globally, emphasizing the critical need for intelligent systems to detect and mitigate driver sleepiness. This project leverages cutting-edge Large Language Models (LLMs) integrated with multimodal data—including facial expressions, audio signals, driving behavior, and contextual cues—to proactively assess driver alertness levels.
 
+
 **Key Objectives**
 
 1. Develop a robust multimodal feature extraction framework.
@@ -13,6 +14,7 @@ Driver fatigue is one of the leading causes of road accidents globally, emphasiz
 3. Utilize LLMs (GPT-4, LLaMA 2) for intelligent decision-making and tailored interventions.
 
 4. Evaluate system effectiveness, reliability, and user satisfaction.
+   
 
 **How it Works**
 
@@ -21,6 +23,7 @@ Driver fatigue is one of the leading causes of road accidents globally, emphasiz
 **_Alertness Metrics:_** Real-time driver alertness levels (e.g., alert, drowsy, sleepy) computed through integrated analysis.
 
 **_Interventions:_** Tailored actions such as cabin environment adjustments, conversation initiation, or rest-stop recommendations.
+
 
 **Technologies & Frameworks**
 
@@ -34,6 +37,7 @@ _**Driving Behavior Analysis:**_ Informer Transformer
 
 _**Decision-Making:**_ GPT-4, LLaMA 2
 
+
 **Impact & Applications**
 
 1. Improved driver safety through real-time fatigue mitigation.
@@ -41,10 +45,12 @@ _**Decision-Making:**_ GPT-4, LLaMA 2
 2. Enhanced automotive systems integrating AI-driven alertness management.
 
 3. Reduction in fatigue-related road accidents.
+4. 
 
 **Supervisor**
 
 Ignacio Alvarez
+
 
 **Disclaimer**
 
