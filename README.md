@@ -45,8 +45,8 @@ _**Decision-Making:**_ GPT-4, LLaMA 2
 2. Enhanced automotive systems integrating AI-driven alertness management.
 
 3. Reduction in fatigue-related road accidents.
-4. 
 
+   
 **Supervisor**
 
 Ignacio Alvarez
