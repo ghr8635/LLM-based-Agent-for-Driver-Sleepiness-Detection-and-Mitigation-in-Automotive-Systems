@@ -14,33 +14,33 @@ Driver fatigue is one of the leading causes of road accidents globally, emphasiz
 
 4. Evaluate system effectiveness, reliability, and user satisfaction.
 
-    **How it Works**
+**How it Works**
 
-_Multimodal Data Fusion:_ Vision Transformers, Wav2Vec audio encoders, and Informer Transformers process visual, audio, and driving behavioral data, respectively.
+**_Multimodal Data Fusion:_** Vision Transformers, Wav2Vec audio encoders, and Informer Transformers process visual, audio, and driving behavioral data, respectively.
 
-_Alertness Metrics:_ Real-time driver alertness levels (e.g., alert, drowsy, sleepy) computed through integrated analysis.
+**_Alertness Metrics:_** Real-time driver alertness levels (e.g., alert, drowsy, sleepy) computed through integrated analysis.
 
-_Interventions:_ Tailored actions such as cabin environment adjustments, conversation initiation, or rest-stop recommendations.
+**_Interventions:_** Tailored actions such as cabin environment adjustments, conversation initiation, or rest-stop recommendations.
 
 **Technologies & Frameworks**
 
-Vision: ResNet, ViT (Vision Transformer)
+**_Vision_:** ResNet, ViT (Vision Transformer)
 
-Audio Processing: Wav2Vec 2.0
+_**Audio Processing:**_ Wav2Vec 2.0
 
-Driving Behavior Analysis: Informer Transformer
+_**Driving Behavior Analysis:**_ Informer Transformer
 
-Multimodal Fusion: Cross-modal Transformers
+**_Multimodal Fusion:_** Cross-modal Transformers
 
-Decision-Making: GPT-4, LLaMA 2
+_**Decision-Making:**_ GPT-4, LLaMA 2
 
 **Impact & Applications**
 
-Improved driver safety through real-time fatigue mitigation.
+1. Improved driver safety through real-time fatigue mitigation.
 
-Enhanced automotive systems integrating AI-driven alertness management.
+2. Enhanced automotive systems integrating AI-driven alertness management.
 
-Reduction in fatigue-related road accidents.
+3. Reduction in fatigue-related road accidents.
 
 **Supervisor**
 
