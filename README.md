@@ -14,7 +14,7 @@ Driver fatigue is one of the leading causes of road accidents globally, emphasiz
 
 4. Evaluate system effectiveness, reliability, and user satisfaction.
 
-**How it Works**
+    **How it Works**
 
 _Multimodal Data Fusion:_ Vision Transformers, Wav2Vec audio encoders, and Informer Transformers process visual, audio, and driving behavioral data, respectively.
 
