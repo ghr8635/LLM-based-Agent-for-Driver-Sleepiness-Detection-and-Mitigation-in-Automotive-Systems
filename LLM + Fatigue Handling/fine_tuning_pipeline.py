@@ -45,8 +45,8 @@ def train():
     full_model = PrefixLLaMAModel(llama_model, adapter)
 
     # 4. Create toy dataset (replace with real data)
-    features = np.random.rand(20, FEATURE_DIM).tolist()
-    responses = ["Suggest the driver to take a short rest." for _ in range(20)]
+    #features = np.random.rand(20, FEATURE_DIM).tolist()
+    #responses = ["Suggest the driver to take a short rest." for _ in range(20)]
 
     dataset = input_process.SensorTextDataset(features, responses, tokenizer)
 
