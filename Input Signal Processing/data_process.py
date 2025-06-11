@@ -1,4 +1,4 @@
-import os, cv2
+import os, cv2, json
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -39,48 +39,47 @@ def clean_ir_images(input_dir, output_dir, check_black_white=True):
     print(f"[Clean] Total={total}, Dropped={dropped}, Kept={len(valid_files)}")
     return valid_files
 
+# -------- STEP 2: LOAD JSONs --------
+def load_json_data(ir_json_path, driving_json_path):
+    with open(ir_json_path, 'r') as f:
+        ir_data = pd.DataFrame(json.load(f))
 
-# -------- STEP 2: LOAD CSVs --------
-def load_dataframes(ir_csv, steering_csv, lane_csv):
-    ir_df = pd.read_csv(ir_csv)
-    steering_df = pd.read_csv(steering_csv)
-    lane_df = pd.read_csv(lane_csv)
+    with open(driving_json_path, 'r') as f:
+        drive_data = pd.DataFrame(json.load(f))
 
-    ir_df['timestamp'] = pd.to_datetime(ir_df['timestamp'])
-    steering_df['timestamp'] = pd.to_datetime(steering_df['timestamp'])
-    lane_df['timestamp'] = pd.to_datetime(lane_df['timestamp'])
+    #drive_data.rename(columns={'lane_position': 'lane_offset'}, inplace=True)
 
-    return ir_df, steering_df, lane_df
+    ir_data['timestamp'] = pd.to_datetime(ir_data['timestamp'], unit='s')
+    drive_data['timestamp'] = pd.to_datetime(drive_data['timestamp'], unit='s')
 
+    return ir_data, drive_data
 
 # -------- STEP 3: SYNC --------
 def normalize_series(series):
     return (series - series.min()) / (series.max() - series.min())
 
-def sync_data(valid_ir_files, ir_df, steering_df, lane_df, output_path, window_seconds=5):
+def sync_data(valid_ir_files, ir_df, drive_df, output_path, window_seconds=5):
     timestamp_map = dict(zip(ir_df['filename'], ir_df['timestamp']))
     synced_rows = []
 
     for fname in valid_ir_files:
         ir_ts = timestamp_map.get(fname)
-        if not ir_ts:
+        if ir_ts is None:
             continue
 
-        steering_val = steering_df.iloc[(steering_df['timestamp'] - ir_ts).abs().argmin()]
-        lane_val = lane_df.iloc[(lane_df['timestamp'] - ir_ts).abs().argmin()]
+        closest_row = drive_df.iloc[(drive_df['timestamp'] - ir_ts).abs().argmin()]
 
         synced_rows.append({
             "timestamp": ir_ts,
             "ir_filename": fname,
-            "steering_angle": steering_val['steering_angle'],
-            "lane_offset": lane_val['lane_offset']
+            "steering_angle": closest_row['steering_angle'],
+            "lane_offset": closest_row['lane_offset']
         })
 
     df_out = pd.DataFrame(synced_rows)
     df_out['steering_angle'] = normalize_series(df_out['steering_angle'])
     df_out['lane_offset'] = normalize_series(df_out['lane_offset'])
 
-    # Assign window_id and row ranges
     df_out = df_out.sort_values('timestamp').reset_index(drop=True)
     df_out['window_id'] = -1
     window_ranges = []
@@ -106,7 +105,6 @@ def sync_data(valid_ir_files, ir_df, steering_df, lane_df, output_path, window_s
     pd.DataFrame(window_ranges).to_csv(Path(output_path).with_name("window_ranges.csv"), index=False)
     print(f"[Sync] Synced rows with window IDs written to {output_path}")
 
-
 # -------- STEP 4: GAUSSIAN BLUR --------
 def apply_gaussian_blur(input_dir, output_dir, kernel_size=(5, 5), sigma=0):
     input_dir = Path(input_dir)
@@ -129,7 +127,6 @@ def apply_gaussian_blur(input_dir, output_dir, kernel_size=(5, 5), sigma=0):
 
     print(f"[Blur] {len(blurred_files)} images blurred → {output_dir.name}")
     return blurred_files
-
 
 # -------- STEP 5: RESIZE --------
 def resize_images(input_dir, output_dir, target_size=(224, 224)):
@@ -154,21 +151,19 @@ def resize_images(input_dir, output_dir, target_size=(224, 224)):
     print(f"[Resize] {len(resized_files)} images resized to {target_size} → {output_dir.name}")
     return resized_files
 
-
 # -------- MASTER RUNNER --------
 def run_pipeline(
     step_clean=True,
     step_sync=True,
     step_blur=True,
     step_resize=True,
-    raw_ir_dir=r"C:\Users\F22RasGhu\OneDrive - FGroup\Desktop\LLM\ir_images",
-    cleaned_ir_dir=r"C:\Users\F22RasGhu\OneDrive - FGroup\Desktop\LLM\cleaned_ir_images",
-    blurred_ir_dir=r"C:\Users\F22RasGhu\OneDrive - FGroup\Desktop\LLM\blurred_ir_images",
-    resized_ir_dir=r"C:\Users\F22RasGhu\OneDrive - FGroup\Desktop\LLM\resized_ir_images",
-    ir_timestamps_csv="ir_timestamps.csv",
-    steering_csv="steering_data.csv",
-    lane_csv="lane_data.csv",
-    sync_output_csv=r"C:\Users\F22RasGhu\OneDrive - FGroup\Desktop\LLM\synced_output.csv",
+    raw_ir_dir=r"C:\Path\to\raw_ir_images",
+    cleaned_ir_dir=r"C:\Path\to\cleaned_ir_images",
+    blurred_ir_dir=r"C:\Path\to\blurred_ir_images",
+    resized_ir_dir=r"C:\Path\to\resized_ir_images",
+    ir_timestamps_json="ir_timestamps.json",
+    driving_data_json="carla_data_log.json",
+    sync_output_csv=r"C:\Path\to\synced_output.csv",
     resize_target=(224, 224),
     window_seconds=0.005
 ):
@@ -180,15 +175,14 @@ def run_pipeline(
         valid_files = [f.name for f in Path(cleaned_ir_dir).glob("*") if f.suffix.lower() in SUPPORTED_FORMATS]
 
     if step_sync:
-        ir_df, steering_df, lane_df = load_dataframes(ir_timestamps_csv, steering_csv, lane_csv)
-        sync_data(valid_files, ir_df, steering_df, lane_df, Path(sync_output_csv), window_seconds)
+        ir_df, drive_df = load_json_data(ir_timestamps_json, driving_data_json)
+        sync_data(valid_files, ir_df, drive_df, Path(sync_output_csv), window_seconds)
 
     if step_blur:
         apply_gaussian_blur(cleaned_ir_dir, blurred_ir_dir)
 
     if step_resize:
         resize_images(blurred_ir_dir, resized_ir_dir, resize_target)
-
 
 # -------- ENTRY POINT --------
 if __name__ == "__main__":
