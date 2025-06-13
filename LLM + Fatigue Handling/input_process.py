@@ -1,13 +1,84 @@
 import torch
-import torch.nn as nn
 from torch.utils.data import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
-from peft import LoraConfig, get_peft_model, TaskType
-from typing import List
+from transformers import AutoTokenizer
+import pandas as pd
 import numpy as np
+from typing import List
 
+# === Intervention Lookup Table ===
+INTERVENTION_LOOKUP = {
+    ("Low", "Low", "Low"): {
+        "fan": "off",
+        "music": "off",
+        "vibration": "off",
+        "reason": "No signs of fatigue detected. No intervention required."
+    },
+    ("Moderate", "Low", "Low"): {
+        "fan": "level 2",
+        "music": "off",
+        "vibration": "off",
+        "reason": "Moderate visual fatigue may impair focus. Increased airflow helps maintain alertness without overstimulation."
+    },
+    ("High", "Low", "Low"): {
+        "fan": "level 3",
+        "music": "beep",
+        "vibration": "Vibrate",
+        "reason": "Severe visual fatigue threatens awareness. Multi-modal alerts counter visual disengagement effectively."
+    },
+    ("Low", "Moderate", "Moderate"): {
+        "fan": "level 2",
+        "music": "off",
+        "vibration": "off",
+        "reason": "Motor and lane variations suggest early fatigue. Moderate airflow stabilizes driver alertness."
+    },
+    ("Moderate", "Moderate", "Moderate"): {
+        "fan": "level 2",
+        "music": "beep",
+        "vibration": "off",
+        "reason": "Combined visual and control fatigue detected. Fan and beep boost sensory engagement without physical feedback."
+    },
+    ("High", "Moderate", "Moderate"): {
+        "fan": "level 3",
+        "music": "beep",
+        "vibration": "Vibrate",
+        "reason": "High fatigue across systems impairs control. Full intervention improves driver responsiveness and safety."
+    },
+    ("Low", "High", "High"): {
+        "fan": "level 3",
+        "music": "beep",
+        "vibration": "Vibrate",
+        "reason": "Physical and lane instability despite visual alertness. Tactile and auditory cues reinforce driver control."
+    },
+    ("Moderate", "High", "High"): {
+        "fan": "level 3",
+        "music": "beep",
+        "vibration": "Vibrate",
+        "reason": "Motor and lane fatigue with visual strain detected. Strong multi-sensory cues are required immediately."
+    },
+    ("High", "High", "High"): {
+        "fan": "level 3",
+        "music": "beep",
+        "vibration": "Vibrate",
+        "reason": "Critical fatigue in all systems detected. Immediate and full intervention needed to ensure driver safety."
+    }
+}
 
-# Structured Prompt Function
+# === Intervention Generation Function ===
+def get_intervention(cam_level: str, steer_level: str, lane_level: str) -> str:
+    key = (cam_level, steer_level, lane_level)
+    result = INTERVENTION_LOOKUP.get(key)
+
+    if result:
+        return (
+            f"Fan: {result['fan']}\n"
+            f"Music: {result['music']}\n"
+            f"Vibration: {result['vibration']}\n"
+            f"Reason: {result['reason']}"
+        )
+    else:
+        return "No matching intervention found for the given fatigue levels."
+
+# === Prompt Function ===
 def build_driver_state_prompt_from_list(features: list) -> str:
     if len(features) != 12:
         raise ValueError(f"Expected 12 input features, got {len(features)}")
@@ -50,10 +121,10 @@ Based on the above signals, what should be the appropriate intervention?
 """.strip()
     return prompt
 
-
+# === Dataset Class ===
 MAX_LENGTH = 256
-# Dataset Class
-class SensorTextDataset(Dataset):
+
+class SensorTextDataset(torch.utils.data.Dataset):
     def __init__(self, features: List[List[float]], responses: List[str], tokenizer):
         self.features = features
         self.responses = responses
@@ -78,7 +149,7 @@ class SensorTextDataset(Dataset):
             "features": torch.tensor(feature_vector, dtype=torch.float32)
         }
 
-# Collate Function
+# === Collate Function ===
 def custom_collate(batch):
     return {
         "input_ids": torch.stack([item["input_ids"] for item in batch]),
@@ -86,3 +157,22 @@ def custom_collate(batch):
         "labels": torch.stack([item["labels"] for item in batch]),
         "features": torch.stack([item["features"] for item in batch])
     }
+
+# === CSV Loader Function ===
+def load_csv_dataset(csv_path: str):
+    df = pd.read_csv(csv_path)
+
+    # Extract first 12 numerical features
+    features = df.iloc[:, :12].values.tolist()
+
+    # Get fatigue levels as strings (categorical values)
+    responses = [
+        get_intervention(
+            row['fatigue_camera_level'],   # e.g., "Low", "Moderate", "High"
+            row['fatigue_steering_level'],
+            row['fatigue_lane_level']
+        )
+        for _, row in df.iterrows()
+    ]
+
+    return features, responses
