@@ -73,11 +73,12 @@ Based on the above signals, what should be the appropriate intervention?
 MAX_LENGTH = 256
 
 class SensorTextDataset(torch.utils.data.Dataset):
-    def __init__(self, features: List[List[float]], fatigue_levels: List[List[str]], responses: List[str], tokenizer):
+    def __init__(self, features: List[List[float]], fatigue_levels: List[List[str]], responses: List[str], tokenizer, prefix_token_count: int):
         self.features = features
         self.fatigue_levels = fatigue_levels
         self.responses = responses
         self.tokenizer = tokenizer
+        self.prefix_token_count = prefix_token_count
 
     def __len__(self):
         return len(self.features)
@@ -93,6 +94,9 @@ class SensorTextDataset(torch.utils.data.Dataset):
         labels = self.tokenizer(response, return_tensors="pt", truncation=True, padding="max_length", max_length=MAX_LENGTH)["input_ids"]
         labels[labels == self.tokenizer.pad_token_id] = -100
 
+        # Pad with -100 for prefix tokens to match input_embeds length
+        prefix_padding = torch.full((1, self.prefix_token_count), -100)
+        labels = torch.cat([prefix_padding, labels], dim=1)
         return {
             "input_ids": inputs["input_ids"].squeeze(0),
             "attention_mask": inputs["attention_mask"].squeeze(0),
