@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-FEATURE_DIM = 12
+FEATURE_DIM = 9
 EMBEDDING_DIM = 4096
 PREFIX_TOKEN_COUNT = 5
 

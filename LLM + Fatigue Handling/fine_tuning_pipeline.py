@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, BitsAndBytesConfig, TrainerCallback
 from peft import LoraConfig, get_peft_model, TaskType
 import input_process  # Must contain load_csv_dataset, SensorTextDataset, custom_collate
 from model_wrapper_with_mlp_adapter import FeaturePrefixAdapter, PrefixLLaMAModel
@@ -9,7 +9,7 @@ import os
 
 # === Configuration ===
 MODEL_NAME = "meta-llama/Llama-2-7b-hf"
-FEATURE_DIM = 12
+FEATURE_DIM = 9  # Updated based on new feature list
 EMBEDDING_DIM = 4096
 PREFIX_TOKEN_COUNT = 5
 MAX_LENGTH = 256
@@ -23,6 +23,13 @@ torch.manual_seed(42)
 
 # Get Hugging Face token from environment variable
 HUGGINGFACE_TOKEN = os.environ.get("HUGGINGFACE_TOKEN")
+
+# === Callback to log loss ===
+class LossLoggerCallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is not None and 'loss' in logs:
+            with open("loss_log.csv", "a") as f:
+                f.write(f"{state.global_step},{logs['loss']:.4f}\n")
 
 def train():
     if HUGGINGFACE_TOKEN is None:
@@ -63,14 +70,19 @@ def train():
     llama_model = get_peft_model(base_model, lora_config)
 
     # 4. Add prefix adapter for numeric features
-    adapter = FeaturePrefixAdapter()
+    adapter = FeaturePrefixAdapter(
+        input_dim=FEATURE_DIM,
+        hidden_dim=256,
+        output_dim=EMBEDDING_DIM,
+        num_tokens=PREFIX_TOKEN_COUNT
+    )
     full_model = PrefixLLaMAModel(llama_model, adapter)
 
-    # 5. Load dataset
-    features, responses = input_process.load_csv_dataset(CSV_PATH)
-    dataset = input_process.SensorTextDataset(features, responses, tokenizer)
+    # 5. Load dataset (updated)
+    features, fatigue_levels, responses = input_process.load_csv_dataset(CSV_PATH)
+    dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer)
 
-    # 6. Training arguments
+    # 6. Training arguments with TensorBoard support
     training_args = TrainingArguments(
         output_dir="./llama_prefix_finetune",
         per_device_train_batch_size=BATCH_SIZE,
@@ -79,7 +91,7 @@ def train():
         save_strategy="epoch",
         logging_dir="./logs",
         logging_steps=10,
-        report_to="none",
+        report_to="tensorboard",
         save_total_limit=1,
         bf16=True  # Change to False if unsupported
     )
@@ -90,7 +102,8 @@ def train():
         args=training_args,
         train_dataset=dataset,
         tokenizer=tokenizer,
-        data_collator=input_process.custom_collate
+        data_collator=input_process.custom_collate,
+        callbacks=[LossLoggerCallback()]
     )
 
     # 8. Train
