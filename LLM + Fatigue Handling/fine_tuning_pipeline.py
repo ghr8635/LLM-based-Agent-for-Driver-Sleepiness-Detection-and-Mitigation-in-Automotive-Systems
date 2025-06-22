@@ -14,7 +14,13 @@ EMBEDDING_DIM = 4096
 PREFIX_TOKEN_COUNT = 5
 MAX_LENGTH = 256
 BATCH_SIZE = 2
-CSV_PATH = "/content/LLM-based-Agent-for-Driver-Sleepiness-Detection-and-Mitigation-in-Automotive-Systems/dummy_data.csv"
+
+# Set up base directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CSV_PATH = os.path.join(BASE_DIR, "dummy_data.csv")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+OUTPUT_DIR = os.path.join(BASE_DIR, "llama_prefix_finetune")
+FINAL_MODEL_DIR = os.path.join(BASE_DIR, "llama_prefix_final_model")
 
 # Set seeds for reproducibility
 random.seed(42)
@@ -28,7 +34,7 @@ HUGGINGFACE_TOKEN = os.environ.get("HUGGINGFACE_TOKEN")
 class LossLoggerCallback(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs is not None and 'loss' in logs:
-            with open("loss_log.csv", "a") as f:
+            with open(os.path.join(LOG_DIR, "loss_log.csv"), "a") as f:
                 f.write(f"{state.global_step},{logs['loss']:.4f}\n")
 
 def train():
@@ -40,8 +46,10 @@ def train():
         MODEL_NAME,
         token=HUGGINGFACE_TOKEN
     )
-    
-    tokenizer.pad_token = tokenizer.eos_token  # Fix for missing pad_token
+
+    # Add pad token if missing
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
     # 2. Quantization config
     quant_config = BitsAndBytesConfig(
@@ -59,6 +67,8 @@ def train():
         quantization_config=quant_config,
         token=HUGGINGFACE_TOKEN
     )
+
+    base_model.resize_token_embeddings(len(tokenizer))  # Resize embeddings for new pad token
 
     lora_config = LoraConfig(
         r=8,
@@ -82,16 +92,16 @@ def train():
 
     # 5. Load dataset (updated)
     features, fatigue_levels, responses = input_process.load_csv_dataset(CSV_PATH)
-    dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer, PREFIX_TOKEN_COUNT)
+    dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer)
 
     # 6. Training arguments with TensorBoard support
     training_args = TrainingArguments(
-        output_dir="./llama_prefix_finetune",
+        output_dir=OUTPUT_DIR,
         per_device_train_batch_size=BATCH_SIZE,
         num_train_epochs=3,
         learning_rate=5e-5,
         save_strategy="epoch",
-        logging_dir="./logs",
+        logging_dir=LOG_DIR,
         logging_steps=10,
         report_to="tensorboard",
         save_total_limit=1,
@@ -112,11 +122,11 @@ def train():
     trainer.train()
 
     # 9. Save model artifacts
-    trainer.save_model("./llama_prefix_final_model")
-    tokenizer.save_pretrained("./llama_prefix_final_model")
-    torch.save(adapter.state_dict(), "./llama_prefix_final_model/prefix_adapter.pth")
+    trainer.save_model(FINAL_MODEL_DIR)
+    tokenizer.save_pretrained(FINAL_MODEL_DIR)
+    torch.save(adapter.state_dict(), os.path.join(FINAL_MODEL_DIR, "prefix_adapter.pth"))
 
-    with open("./llama_prefix_final_model/config.txt", "w") as f:
+    with open(os.path.join(FINAL_MODEL_DIR, "config.txt"), "w") as f:
         f.write(f"Model: {MODEL_NAME}\nEpochs: 3\nBatch size: {BATCH_SIZE}\nPrefix shape: ({PREFIX_TOKEN_COUNT}, {EMBEDDING_DIM})")
 
 if __name__ == "__main__":
