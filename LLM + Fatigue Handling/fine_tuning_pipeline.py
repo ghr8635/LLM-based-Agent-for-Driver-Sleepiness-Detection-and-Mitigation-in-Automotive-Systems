@@ -92,7 +92,7 @@ def train():
 
     # 5. Load dataset (updated)
     features, fatigue_levels, responses = input_process.load_csv_dataset(CSV_PATH)
-    dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer)
+    dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer, PREFIX_TOKEN_COUNT)
 
     # 6. Training arguments with TensorBoard support
     training_args = TrainingArguments(
