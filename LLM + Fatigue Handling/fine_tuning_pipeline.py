@@ -6,10 +6,11 @@ from model_wrapper_with_mlp_adapter import FeaturePrefixAdapter, PrefixLLaMAMode
 import random
 import numpy as np
 import os
+import shutil
 
 # === Configuration ===
 MODEL_NAME = "meta-llama/Llama-2-7b-hf"
-FEATURE_DIM = 9  # Updated based on new feature list
+FEATURE_DIM = 9
 EMBEDDING_DIM = 4096
 PREFIX_TOKEN_COUNT = 5
 MAX_LENGTH = 256
@@ -46,8 +47,6 @@ def train():
         MODEL_NAME,
         token=HUGGINGFACE_TOKEN
     )
-
-    # Add pad token if missing
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
@@ -67,8 +66,7 @@ def train():
         quantization_config=quant_config,
         token=HUGGINGFACE_TOKEN
     )
-
-    base_model.resize_token_embeddings(len(tokenizer))  # Resize embeddings for new pad token
+    base_model.resize_token_embeddings(len(tokenizer))
 
     lora_config = LoraConfig(
         r=8,
@@ -78,10 +76,9 @@ def train():
         bias="none",
         task_type=TaskType.CAUSAL_LM
     )
-
     llama_model = get_peft_model(base_model, lora_config)
 
-    # 4. Add prefix adapter for numeric features
+    # 4. Add MLP adapter
     adapter = FeaturePrefixAdapter(
         input_dim=FEATURE_DIM,
         hidden_dim=256,
@@ -90,25 +87,24 @@ def train():
     )
     full_model = PrefixLLaMAModel(llama_model, adapter)
 
-    # 5. Load dataset (updated)
+    # 5. Load dataset
     features, fatigue_levels, responses = input_process.load_csv_dataset(CSV_PATH)
     dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer, PREFIX_TOKEN_COUNT)
 
-    # 6. Training arguments with TensorBoard support
+    # 6. Training args
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=BATCH_SIZE,
         num_train_epochs=3,
         learning_rate=5e-5,
-        save_strategy="epoch",
+        save_strategy="no",  # Prevent internal save (avoid safetensors issue)
         logging_dir=LOG_DIR,
         logging_steps=10,
         report_to="tensorboard",
-        save_total_limit=1,
-        bf16=True  # Change to False if unsupported
+        bf16=True  # Set to False if unsupported on your hardware
     )
 
-    # 7. Trainer setup
+    # 7. Trainer
     trainer = Trainer(
         model=full_model,
         args=training_args,
@@ -121,10 +117,14 @@ def train():
     # 8. Train
     trainer.train()
 
-    # 9. Save model artifacts
-    trainer.save_model(FINAL_MODEL_DIR)
-    tokenizer.save_pretrained(FINAL_MODEL_DIR)
-    torch.save(adapter.state_dict(), os.path.join(FINAL_MODEL_DIR, "prefix_adapter.pth"))
+    # 9. Save everything manually
+    if os.path.exists(FINAL_MODEL_DIR):
+        shutil.rmtree(FINAL_MODEL_DIR)
+    os.makedirs(FINAL_MODEL_DIR, exist_ok=True)
+
+    full_model.llama.save_pretrained(FINAL_MODEL_DIR)  # Save LoRA + LLaMA
+    tokenizer.save_pretrained(FINAL_MODEL_DIR)         # Save tokenizer
+    torch.save(adapter.state_dict(), os.path.join(FINAL_MODEL_DIR, "prefix_adapter.pth"))  # Save MLP
 
     with open(os.path.join(FINAL_MODEL_DIR, "config.txt"), "w") as f:
         f.write(f"Model: {MODEL_NAME}\nEpochs: 3\nBatch size: {BATCH_SIZE}\nPrefix shape: ({PREFIX_TOKEN_COUNT}, {EMBEDDING_DIM})")
