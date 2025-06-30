@@ -15,7 +15,7 @@ class PrefixVectorDB:
         if os.path.exists(index_path):
             self.index = faiss.read_index(index_path)
         else:
-            self.index = faiss.IndexFlatL2(dim)
+            self.index = faiss.IndexHNSWFlat(self.dim, 32)
             self.index = faiss.IndexIDMap(self.index)
 
         if os.path.exists(metadata_path):
@@ -47,10 +47,13 @@ class PrefixVectorDB:
                 if idx == -1:
                     continue
                 neighbor = self.metadata.get(int(idx), {})
-                cosine_dist = self.cosine_distance(vector, self.index.reconstruct(int(idx)))
+                neighbor_vector = neighbor.get('vector')
+                if neighbor_vector is None:
+                    continue
+                cosine_dist = self.cosine_distance(vector, neighbor_vector)
                 if neighbor.get("intervention") == intervention and cosine_dist < 0.05:
                     return  # Similar entry exists
-
+                
         if len(self.metadata) >= 2000:
             # Density-based pruning: remove one from the most crowded region
             D, I = self.index.search(np.expand_dims(vector, axis=0), k=10)
@@ -68,10 +71,11 @@ class PrefixVectorDB:
 
         self.index.add_with_ids(np.expand_dims(vector, axis=0), np.array([self.current_id]))
         self.metadata[self.current_id] = {
-            'intervention': intervention,
-            'source': source,
-            'timestamp': time.time(),
-            'last_accessed': time.time()
+        'intervention': intervention,
+        'source': source,
+        'timestamp': time.time(),
+        'last_accessed': time.time(),
+        'vector': vector  # store the vector here for future checks
         }
         self.current_id += 1
 
