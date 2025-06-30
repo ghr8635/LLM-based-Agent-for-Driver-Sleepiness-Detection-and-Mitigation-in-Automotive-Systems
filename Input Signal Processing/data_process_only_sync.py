@@ -1,81 +1,58 @@
 import pandas as pd
-from pathlib import Path
 
-# -------- STEP 1: LOAD CSVs --------
+# -------- STEP 1: LOAD CSVs AND CONVERT TIMESTAMPS --------
 def load_csv_data(camera_csv_path, driving_csv_path):
     cam_df = pd.read_csv(camera_csv_path)
     drive_df = pd.read_csv(driving_csv_path)
 
-    # Convert timestamp to datetime
+    # Convert float UNIX timestamps to datetime
     cam_df['timestamp'] = pd.to_datetime(cam_df['timestamp'], unit='s')
     drive_df['timestamp'] = pd.to_datetime(drive_df['timestamp'], unit='s')
 
     return cam_df, drive_df
 
-# -------- STEP 2: NORMALIZATION --------
-def normalize_series(series):
-    return (series - series.min()) / (series.max() - series.min())
-
-# -------- STEP 3: SYNC (camera high-freq, sync to steering/lane) --------
-def sync_data(cam_df, drive_df, output_path, window_seconds=5):
+# -------- STEP 2: SYNC (Reference = Steering/Lane data) --------
+def sync_data(cam_df, drive_df, output_path):
     synced_rows = []
 
     for _, drive_row in drive_df.iterrows():
         drive_ts = drive_row['timestamp']
 
-        # Find closest camera frame
+        # Find closest camera image by timestamp
         closest_cam = cam_df.iloc[(cam_df['timestamp'] - drive_ts).abs().argmin()]
+
         synced_rows.append({
             "timestamp": drive_ts,
-            "ir_filename": closest_cam['image_name'],
-            "steering_angle": drive_row['steering_angle'],
-            "lane_offset": drive_row['lane_offset']
+            "timestamp_float": drive_ts.timestamp(),  # float with full precision
+            "ir_filename": closest_cam['image_filename'],
+            "steering_angle": drive_row['steering'],
+            "lane_offset": drive_row['offset']
         })
 
     df_out = pd.DataFrame(synced_rows)
-    df_out['steering_angle'] = normalize_series(df_out['steering_angle'])
-    df_out['lane_offset'] = normalize_series(df_out['lane_offset'])
 
-    df_out = df_out.sort_values('timestamp').reset_index(drop=True)
-    df_out['window_id'] = -1
-    window_ranges = []
+    df_out.to_csv(
+        output_path,
+        index=False,
+        date_format='%Y-%m-%d %H:%M:%S.%f',
+        float_format='%.9f'
+    )
 
-    for i in range(len(df_out)):
-        start_time = df_out.loc[i, 'timestamp']
-        end_time = start_time + pd.Timedelta(seconds=window_seconds)
-        mask = (df_out['timestamp'] >= start_time) & (df_out['timestamp'] < end_time) & (df_out['window_id'] == -1)
-
-        if mask.any():
-            start_row = df_out[mask].index.min()
-            end_row = df_out[mask].index.max()
-            df_out.loc[mask, 'window_id'] = i
-            window_ranges.append({
-                'window_id': i,
-                'start_row': int(start_row),
-                'end_row': int(end_row),
-                'start_time': start_time,
-                'end_time': end_time
-            })
-
-    df_out.to_csv(output_path, index=False)
-    pd.DataFrame(window_ranges).to_csv(Path(output_path).with_name("window_ranges.csv"), index=False)
-    print(f"[Sync] {len(df_out)} steering/lane rows synced with closest camera frames.")
+    print(f"[Sync] Saved {len(df_out)} synced rows to {output_path}")
 
 # -------- RUNNER --------
 def run_csv_sync(
     camera_csv_path,
     driving_csv_path,
-    output_csv_path,
-    window_seconds=0.005
+    output_csv_path
 ):
     cam_df, drive_df = load_csv_data(camera_csv_path, driving_csv_path)
-    sync_data(cam_df, drive_df, output_csv_path, window_seconds)
+    sync_data(cam_df, drive_df, output_csv_path)
 
 # -------- ENTRY POINT --------
 if __name__ == "__main__":
     run_csv_sync(
-        camera_csv_path="camera_data.csv",              # CSV with columns: timestamp, image_name
-        driving_csv_path="driving_data.csv",            # CSV with columns: timestamp, steering_angle, lane_offset
-        output_csv_path="synced_output.csv",            # Output combined synced CSV
-        window_seconds=0.005
+        camera_csv_path=r"C:\Users\hussa\OneDrive\Desktop\Projects\LLM Project\image_metadata.csv",  # CSV with columns: timestamp, image_filename
+        driving_csv_path=r"C:\Users\hussa\OneDrive\Desktop\Projects\LLM Project\data_capture.csv",  # CSV with columns: timestamp, steering, offset
+        output_csv_path="synced_output.csv"  # Output combined synced CSV
     )

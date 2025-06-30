@@ -95,7 +95,7 @@ def train():
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=BATCH_SIZE,
-        num_train_epochs=3,
+        num_train_epochs=0.01,
         learning_rate=5e-5,
         save_strategy="no",  # Prevent internal save (avoid safetensors issue)
         logging_dir=LOG_DIR,
