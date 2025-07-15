@@ -1,101 +1,155 @@
-#!/usr/bin/env python3
-
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import String, Float32MultiArray
-from ament_index_python.packages import get_package_share_directory
 import os
-
-
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from pathlib import Path
-import json
-from datetime import datetime
+from rclpy.node import Node
+from std_msgs.msg import String
+from custom_msgs.msg import FatigueFeatures  # Replace with your actual package/msg
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from peft import PeftModel
+from model_wrapper_with_mlp_adapter import FeaturePrefixAdapter
+from faiss_vd import runtime_add, retrieve_similar_vectors
 
-from llm_fatigue_handling.model_wrapper_with_mlp_adapter import FeaturePrefixAdapter, PrefixLLaMAModel
-from llm_fatigue_handling.input_process import build_driver_state_prompt_from_list
-
-PACKAGE_NAME = 'llm_fatigue_handling'
-PACKAGE_DIR = get_package_share_directory(PACKAGE_NAME)
-MODEL_PATH = "./llama_prefix_final_model"
-MODEL_PATH = os.path.join(PACKAGE_DIR, 'llama_prefix_final_model')
-FEATURE_DIM = 12
 
 class LLMNode(Node):
-
     def __init__(self):
-        super().__init__('llm_node')
+        super().__init__('fatigue_intervention_node')
+
+        # Parameters/config
+        self.MODEL_ID = "meta-llama/Llama-2-7b-hf"
+        self.MODEL_DIR = "/content/drive/MyDrive/llm/LLM-based-Agent-for-Driver-Sleepiness-Detection-and-Mitigation-in-Automotive-Systems/llm_and_fatigue_handling/llama_prefix_final_model"
+        self.FEATURE_DIM = 9
+        self.EMBEDDING_DIM = 4096
+        self.PREFIX_TOKEN_COUNT = 5
+        self.MAX_LENGTH = 256
+        self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Load models/tokenizer once at node init
+        self.bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(self.MODEL_DIR)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        base_model = AutoModelForCausalLM.from_pretrained(
+            self.MODEL_ID,
+            device_map="auto",
+            quantization_config=self.bnb_config,
+            token=os.environ.get("HUGGINGFACE_TOKEN")
+        )
+        self.llama_model = PeftModel.from_pretrained(base_model, self.MODEL_DIR, device_map="auto")
+        self.llama_model.eval()
+
+        self.adapter = FeaturePrefixAdapter(
+            input_dim=self.FEATURE_DIM,
+            hidden_dim=256,
+            output_dim=self.EMBEDDING_DIM,
+            num_tokens=self.PREFIX_TOKEN_COUNT
+        )
+        self.adapter.load_state_dict(torch.load(os.path.join(self.MODEL_DIR, "prefix_adapter.pth")))
+        target_dtype = next(self.llama_model.parameters()).dtype
+        self.adapter = self.adapter.to(dtype=target_dtype, device=self.DEVICE)
+        self.adapter.eval()
+
+        # ROS2 subscriber and publisher
         self.subscription = self.create_subscription(
-            Float32MultiArray,
-            'feature_vector',
+            FatigueFeatures,  # your custom message type
+            '/driver_fatigue_features',
             self.listener_callback,
             10
         )
-        self.publisher = self.create_publisher(String, 'llm_response', 10)
+        self.publisher_ = self.create_publisher(String, '/driver_intervention', 10)
 
-        # Load tokenizer and base model
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-        base_model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map='auto', load_in_4bit=True)
-
-        # Load prefix adapter
-        adapter = FeaturePrefixAdapter()
-        adapter.load_state_dict(torch.load(os.path.join(MODEL_PATH, 'prefix_adapter.pth')))
-        self.model = PrefixLLaMAModel(base_model, adapter)
-        self.model.eval()
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
-
-        self.get_logger().info("LLaMA Inference Node is ready.")
+        self.get_logger().info("Fatigue Intervention Node Initialized")
 
     def listener_callback(self, msg):
-        features = list(msg.data)
+        features = list(msg.features)
+        fatigue_levels = list(msg.fatigue_levels)
 
-        if len(features) != 12:
-            self.get_logger().error(f"Expected 12 features, got {len(features)}")
-            return
-        
-        prompt = build_driver_state_prompt_from_list(features)
-        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True).to(self.device)
+        intervention_text = self.generate_intervention(features, fatigue_levels)
+
+        intervention_msg = String()
+        intervention_msg.data = intervention_text
+        self.publisher_.publish(intervention_msg)
+
+        self.get_logger().info(f'Published intervention: {intervention_text}')
+
+    def generate_intervention(self, features, fatigue_levels):
+        # === Compute prefix embedding ===
+        feature_tensor = torch.tensor([features], dtype=next(self.llama_model.parameters()).dtype).to(self.DEVICE)
+        prefix_embeddings = self.adapter(feature_tensor)  # [1, 5, 4096]
+
+        # Prepare prefix embeddings for FAISS
+        token_matrix = prefix_embeddings.squeeze(0).cpu().numpy()  # [5, 4096]
+
+        # === Retrieve top-k similar interventions ===
+        results = retrieve_similar_vectors(token_matrix, k=3)
+        retrieved_interventions = [
+            meta.get("intervention") for _, meta, _ in results
+            if meta.get("intervention") and meta.get("intervention").strip().lower() not in {"", "none", "driver alert"}
+        ]
+
+        # === Build context string with retrieved interventions ===
+        if retrieved_interventions:
+            context = "Previously suggested interventions for similar scenarios: " + "; ".join(retrieved_interventions) + ". "
+        else:
+            context = ""
+
+        # === Build prompt with context + fatigue levels ===
+        prompt = (
+            context +
+            f"Fatigue levels — Camera: {fatigue_levels[0]}, "
+            f"Steering: {fatigue_levels[1]}, "
+            f"Lane: {fatigue_levels[2]}. "
+            f"Based on the above signals, what should be the appropriate intervention?"
+        )
+
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            max_length=self.MAX_LENGTH - self.PREFIX_TOKEN_COUNT,
+            truncation=True,
+            padding="max_length"
+        )
+        input_ids = inputs["input_ids"].to(self.DEVICE)
+        attention_mask = inputs["attention_mask"].to(self.DEVICE)
+
+        input_embeddings = self.llama_model.base_model.get_input_embeddings()(input_ids)
+        prefix_embeddings = prefix_embeddings.to(dtype=input_embeddings.dtype)
+        combined_embeddings = torch.cat([prefix_embeddings, input_embeddings], dim=1)
+
+        prefix_attention_mask = torch.ones(1, self.PREFIX_TOKEN_COUNT, dtype=torch.long).to(self.DEVICE)
+        extended_attention_mask = torch.cat([prefix_attention_mask, attention_mask], dim=1)
 
         with torch.no_grad():
-            outputs = self.model.llama.generate(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                max_new_tokens=100,
+            output = self.llama_model.generate(
+                inputs_embeds=combined_embeddings,
+                attention_mask=extended_attention_mask,
+                max_new_tokens=50,
                 do_sample=True,
                 temperature=0.7,
+                top_k=50,
+                top_p=0.9,
+                pad_token_id=self.tokenizer.pad_token_id
             )
-        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-        response_msg = String()
-        response_msg.data = response
-        self.publisher.publish(response_msg)
-        self.get_logger().info("Published LLM response.")
+        response = self.tokenizer.decode(output[0, self.PREFIX_TOKEN_COUNT:], skip_special_tokens=True)
 
-        # Save to JSON
-        self.save_to_json(response)
+        # === Update FAISS DB with new embedding and intervention ===
+        runtime_add(token_matrix, intervention=response)
 
-    def save_to_json(self, response):
-        record = {
-        "timestamp": datetime.now().isoformat(),
-        "response": response
-        }
-        output_dir = os.path.join(PACKAGE_DIR, 'llm_outputs')
-        os.makedirs(output_dir, exist_ok=True)
-        file_name = os.path.join(output_dir, f"response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-        with open(file_name, 'w') as f:
-            json.dump(record, f, indent=2)
-        self.get_logger().info(f"Saved output to {file_name}")
+        return response
 
 
 def main(args=None):
+    import rclpy
     rclpy.init(args=args)
     node = LLMNode()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
