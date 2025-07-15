@@ -3,6 +3,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments,
 from peft import LoraConfig, get_peft_model, TaskType
 import input_process  # Must contain load_csv_dataset, SensorTextDataset, custom_collate
 from model_wrapper_with_mlp_adapter import FeaturePrefixAdapter, PrefixLLaMAModel
+from faiss_vd import PrefixVectorDB  # ✅ NEW: vector DB import
 import random
 import numpy as np
 import os
@@ -91,17 +92,34 @@ def train():
     features, fatigue_levels, responses = input_process.load_csv_dataset(CSV_PATH)
     dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer, PREFIX_TOKEN_COUNT)
 
+    # === ✅ NEW: Populate vector DB with [5, 4096] embeddings ===
+    print("Extracting and saving prefix vectors to FAISS database...")
+    db = PrefixVectorDB()
+    adapter.eval()
+
+    for i in range(len(dataset)):
+        feature_tensor, _, intervention = dataset[i]  # assuming dataset returns (features, fatigue_level, response)
+        feature_tensor = feature_tensor.unsqueeze(0).to(dtype=torch.float32)
+
+        with torch.no_grad():
+            token_matrix = adapter(feature_tensor).squeeze(0).cpu().numpy()  # [5, 4096]
+
+        db.add_vector(token_matrix, intervention, source='fine_tuning')
+
+    db.save()
+    print("✅ Vector database populated with prefix embeddings.")
+
     # 6. Training args
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=BATCH_SIZE,
         num_train_epochs=0.01,
         learning_rate=5e-5,
-        save_strategy="no",  # Prevent internal save (avoid safetensors issue)
+        save_strategy="no",
         logging_dir=LOG_DIR,
         logging_steps=10,
         report_to="tensorboard",
-        bf16=True  # Set to False if unsupported on your hardware
+        bf16=True
     )
 
     # 7. Trainer
@@ -122,9 +140,9 @@ def train():
         shutil.rmtree(FINAL_MODEL_DIR)
     os.makedirs(FINAL_MODEL_DIR, exist_ok=True)
 
-    full_model.llama.save_pretrained(FINAL_MODEL_DIR)  # Save LoRA + LLaMA
-    tokenizer.save_pretrained(FINAL_MODEL_DIR)         # Save tokenizer
-    torch.save(adapter.state_dict(), os.path.join(FINAL_MODEL_DIR, "prefix_adapter.pth"))  # Save MLP
+    full_model.llama.save_pretrained(FINAL_MODEL_DIR)
+    tokenizer.save_pretrained(FINAL_MODEL_DIR)
+    torch.save(adapter.state_dict(), os.path.join(FINAL_MODEL_DIR, "prefix_adapter.pth"))
 
     with open(os.path.join(FINAL_MODEL_DIR, "config.txt"), "w") as f:
         f.write(f"Model: {MODEL_NAME}\nEpochs: 3\nBatch size: {BATCH_SIZE}\nPrefix shape: ({PREFIX_TOKEN_COUNT}, {EMBEDDING_DIM})")
