@@ -81,7 +81,7 @@ class LLMNode(Node):
         prefix_embeddings = self.adapter(feature_tensor)  # [1, 5, 4096]
 
         # Prepare prefix embeddings for FAISS
-        token_matrix = prefix_embeddings.squeeze(0).cpu().numpy()  # [5, 4096]
+        token_matrix = prefix_embeddings.squeeze(0).detach().cpu().numpy()
 
         # === Retrieve top-k similar interventions ===
         results = retrieve_similar_vectors(token_matrix, k=3)
