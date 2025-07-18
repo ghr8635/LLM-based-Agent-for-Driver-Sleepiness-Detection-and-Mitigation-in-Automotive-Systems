@@ -40,32 +40,43 @@ def build_driver_state_prompt_from_list(features: list, fatigue_list: list) -> s
     prompt = f"""
 You are an intelligent in-cabin assistant. Based on the following driving behavior and fatigue indicators, generate an appropriate intervention to help the driver stay alert.
 
+Strictly follow this format:
+Fan: Level X      ← X is a number like 1, 2, or 3  
+Music: On/Off  
+Vibration: On/Off  
+Reason: <short explanation of why this intervention is needed>
+
+Example:
+Fan: Level 2  
+Music: On  
+Vibration: Off  
+Reason: High PERCLOS and blinking suggest moderate fatigue.
+
 <vision_features>
-blink_rate: {blink_rate:.1f} per minute 
-yawning_rate: {yawning_rate:.1f} per minute 
-perclos: {perclos:.2f}%   
+blink_rate: {blink_rate:.1f} per minute  
+yawning_rate: {yawning_rate:.1f} per minute  
+perclos: {perclos:.2f}%  
 </vision_features>
 
 <lane_features>
 sdlp: {sdlp:.2f} m  
-lane_keeping_ratio: {lane_keeping_ratio:.1f}
+lane_keeping_ratio: {lane_keeping_ratio:.1f}  
 lane_departure_frequency: {lane_departure_freq:.1f} per minute  
 </lane_features>
 
 <steering_features>
-steering_entropy: {steering_entropy:.1f}
+steering_entropy: {steering_entropy:.1f}  
 steering_reversal_rate: {srr:.1f} per minute  
 steering_angle_variability: {sav:.2f}°  
 </steering_features>
 
 <fatigue_levels>
 fatigue_camera: {fatigue_list[0]}  
-fatigue_steering: {fatigue_list[1]}
-fatigue_lane: {fatigue_list[2]}
+fatigue_steering: {fatigue_list[1]}  
+fatigue_lane: {fatigue_list[2]}  
 </fatigue_levels>
 
 <Expected Intervention>
-Based on the above signals, what should be the appropriate intervention?
 """.strip()
     return prompt
 

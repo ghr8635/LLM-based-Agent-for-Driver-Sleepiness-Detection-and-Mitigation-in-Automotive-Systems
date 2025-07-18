@@ -97,13 +97,32 @@ class LLMNode(Node):
             context = ""
 
         # === Build prompt with context + fatigue levels ===
-        prompt = (
-            context +
-            f"Fatigue levels — Camera: {fatigue_levels[0]}, "
-            f"Steering: {fatigue_levels[1]}, "
-            f"Lane: {fatigue_levels[2]}. "
-            f"Based on the above signals, what should be the appropriate intervention?"
-        )
+        prompt = f"""
+        {context}
+        You are an intelligent in-cabin assistant.
+
+        Fatigue levels:
+        - Camera: {fatigue_levels[0]}
+        - Steering: {fatigue_levels[1]}
+        - Lane: {fatigue_levels[2]}
+
+        Based on the above driver state and past examples, suggest an intervention to keep the driver alert.
+
+        ⚠️ IMPORTANT: You must output in this fixed format — no extra text.
+
+        Fan: Level X      ← X is a number like 1, 2, or 3  
+        Music: On/Off  
+        Vibration: On/Off  
+        Reason: 
+
+        Example output:
+        Fan: Level 2  
+        Music: On  
+        Vibration: Off  
+        Reason: High blink rate and PERCLOS indicate moderate drowsiness.
+
+        Now, provide your intervention:
+        """.strip()
 
         inputs = self.tokenizer(
             prompt,

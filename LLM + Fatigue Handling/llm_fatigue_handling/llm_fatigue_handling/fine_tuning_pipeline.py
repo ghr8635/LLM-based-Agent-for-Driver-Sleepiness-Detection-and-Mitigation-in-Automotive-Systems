@@ -3,6 +3,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments,
 from peft import LoraConfig, get_peft_model, TaskType
 import input_process  # Must contain load_csv_dataset, SensorTextDataset, custom_collate
 from model_wrapper_with_mlp_adapter import FeaturePrefixAdapter, PrefixLLaMAModel
+from faiss_vd import PrefixVectorDB  # ✅ Vector DB
 import random
 import numpy as np
 import os
@@ -16,22 +17,22 @@ PREFIX_TOKEN_COUNT = 5
 MAX_LENGTH = 256
 BATCH_SIZE = 2
 
-# Set up base directory
+# === Directories ===
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, "dummy_data.csv")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 OUTPUT_DIR = os.path.join(BASE_DIR, "llama_prefix_finetune")
 FINAL_MODEL_DIR = os.path.join(BASE_DIR, "llama_prefix_final_model")
 
-# Set seeds for reproducibility
+# === Reproducibility ===
 random.seed(42)
 np.random.seed(42)
 torch.manual_seed(42)
 
-# Get Hugging Face token from environment variable
+# === Token ===
 HUGGINGFACE_TOKEN = os.environ.get("HUGGINGFACE_TOKEN")
 
-# === Callback to log loss ===
+# === Loss Logger Callback ===
 class LossLoggerCallback(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs is not None and 'loss' in logs:
@@ -42,7 +43,7 @@ def train():
     if HUGGINGFACE_TOKEN is None:
         raise ValueError("HUGGINGFACE_TOKEN environment variable not set.")
 
-    # 1. Load tokenizer
+    # === 1. Load Tokenizer ===
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_NAME,
         token=HUGGINGFACE_TOKEN
@@ -50,7 +51,7 @@ def train():
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
-    # 2. Quantization config
+    # === 2. Quantization Config ===
     quant_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
@@ -58,7 +59,7 @@ def train():
         bnb_4bit_quant_type="nf4"
     )
 
-    # 3. Load base model with LoRA
+    # === 3. Load Base + LoRA Model ===
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         device_map="auto",
@@ -78,7 +79,7 @@ def train():
     )
     llama_model = get_peft_model(base_model, lora_config)
 
-    # 4. Add MLP adapter
+    # === 4. Add MLP Adapter ===
     adapter = FeaturePrefixAdapter(
         input_dim=FEATURE_DIM,
         hidden_dim=256,
@@ -87,24 +88,42 @@ def train():
     )
     full_model = PrefixLLaMAModel(llama_model, adapter)
 
-    # 5. Load dataset
+    # === 5. Load Dataset ===
     features, fatigue_levels, responses = input_process.load_csv_dataset(CSV_PATH)
     dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer, PREFIX_TOKEN_COUNT)
 
-    # 6. Training args
+    # === ✅ 5.1 Save Prefix Embeddings to Vector DB ===
+    print("Extracting and saving prefix vectors to FAISS database...")
+    db = PrefixVectorDB()
+    adapter.eval()
+
+    for i in range(len(dataset)):
+        item = dataset[i]
+        feature_tensor = item["features"].unsqueeze(0).to(dtype=torch.float32)
+        intervention = responses[i]  # Get original ground truth response
+
+        with torch.no_grad():
+            token_matrix = adapter(feature_tensor).squeeze(0).cpu().numpy()  # Shape: [5, 4096]
+
+        db.add_vector(token_matrix, intervention, source='fine_tuning')
+
+    db.save()
+    print("✅ Vector database populated with prefix embeddings.")
+
+    # === 6. Training Arguments ===
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=BATCH_SIZE,
         num_train_epochs=0.01,
         learning_rate=5e-5,
-        save_strategy="no",  # Prevent internal save (avoid safetensors issue)
+        save_strategy="no",
         logging_dir=LOG_DIR,
         logging_steps=10,
         report_to="tensorboard",
-        bf16=True  # Set to False if unsupported on your hardware
+        bf16=True
     )
 
-    # 7. Trainer
+    # === 7. Trainer ===
     trainer = Trainer(
         model=full_model,
         args=training_args,
@@ -114,17 +133,17 @@ def train():
         callbacks=[LossLoggerCallback()]
     )
 
-    # 8. Train
+    # === 8. Train ===
     trainer.train()
 
-    # 9. Save everything manually
+    # === 9. Save Artifacts ===
     if os.path.exists(FINAL_MODEL_DIR):
         shutil.rmtree(FINAL_MODEL_DIR)
     os.makedirs(FINAL_MODEL_DIR, exist_ok=True)
 
-    full_model.llama.save_pretrained(FINAL_MODEL_DIR)  # Save LoRA + LLaMA
-    tokenizer.save_pretrained(FINAL_MODEL_DIR)         # Save tokenizer
-    torch.save(adapter.state_dict(), os.path.join(FINAL_MODEL_DIR, "prefix_adapter.pth"))  # Save MLP
+    full_model.llama.save_pretrained(FINAL_MODEL_DIR)
+    tokenizer.save_pretrained(FINAL_MODEL_DIR)
+    torch.save(adapter.state_dict(), os.path.join(FINAL_MODEL_DIR, "prefix_adapter.pth"))
 
     with open(os.path.join(FINAL_MODEL_DIR, "config.txt"), "w") as f:
         f.write(f"Model: {MODEL_NAME}\nEpochs: 3\nBatch size: {BATCH_SIZE}\nPrefix shape: ({PREFIX_TOKEN_COUNT}, {EMBEDDING_DIM})")
