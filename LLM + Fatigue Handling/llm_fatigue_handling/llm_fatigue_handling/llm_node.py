@@ -1,4 +1,5 @@
 import os
+import re
 import torch
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -29,32 +30,38 @@ class LLMNode(Node):
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(self.MODEL_DIR)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        base_model = AutoModelForCausalLM.from_pretrained(
-            self.MODEL_ID,
-            device_map="auto",
-            quantization_config=self.bnb_config,
-            token=os.environ.get("HUGGINGFACE_TOKEN")
-        )
-        self.llama_model = PeftModel.from_pretrained(base_model, self.MODEL_DIR, device_map="auto")
-        self.llama_model.eval()
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.MODEL_DIR)
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.adapter = FeaturePrefixAdapter(
-            input_dim=self.FEATURE_DIM,
-            hidden_dim=256,
-            output_dim=self.EMBEDDING_DIM,
-            num_tokens=self.PREFIX_TOKEN_COUNT
-        )
-        self.adapter.load_state_dict(torch.load(os.path.join(self.MODEL_DIR, "prefix_adapter.pth")))
-        target_dtype = next(self.llama_model.parameters()).dtype
-        self.adapter = self.adapter.to(dtype=target_dtype, device=self.DEVICE)
-        self.adapter.eval()
+            base_model = AutoModelForCausalLM.from_pretrained(
+                self.MODEL_ID,
+                device_map="auto",
+                quantization_config=self.bnb_config,
+                token=os.environ.get("HUGGINGFACE_TOKEN")
+            )
+
+            self.llama_model = PeftModel.from_pretrained(base_model, self.MODEL_DIR, device_map="auto")
+            self.llama_model.eval()
+
+            self.adapter = FeaturePrefixAdapter(
+                input_dim=self.FEATURE_DIM,
+                hidden_dim=256,
+                output_dim=self.EMBEDDING_DIM,
+                num_tokens=self.PREFIX_TOKEN_COUNT
+            )
+            self.adapter.load_state_dict(torch.load(os.path.join(self.MODEL_DIR, "prefix_adapter.pth")))
+            target_dtype = next(self.llama_model.parameters()).dtype
+            self.adapter = self.adapter.to(dtype=target_dtype, device=self.DEVICE)
+            self.adapter.eval()
+        except Exception as e:
+            self.get_logger().error(f"Error initializing model: {e}")
+            raise
 
         # ROS2 subscriber and publisher
         self.subscription = self.create_subscription(
-            FatigueFeatures,  # your custom message type
+            FatigueFeatures,
             '/driver_fatigue_features',
             self.listener_callback,
             10
@@ -75,54 +82,51 @@ class LLMNode(Node):
 
         self.get_logger().info(f'Published intervention: {intervention_text}')
 
-    def generate_intervention(self, features, fatigue_levels):
-        # === Compute prefix embedding ===
-        feature_tensor = torch.tensor([features], dtype=next(self.llama_model.parameters()).dtype).to(self.DEVICE)
-        prefix_embeddings = self.adapter(feature_tensor)  # [1, 5, 4096]
+    def is_valid_intervention(self, output: str) -> bool:
+        pattern = r"^Fan: Level [123]\nMusic: (On|Off)\nVibration: (On|Off)\nReason: .+"
+        return bool(re.match(pattern, output.strip()))
 
-        # Prepare prefix embeddings for FAISS
+    def generate_intervention(self, features, fatigue_levels):
+        feature_tensor = torch.tensor([features], dtype=next(self.llama_model.parameters()).dtype).to(self.DEVICE)
+        prefix_embeddings = self.adapter(feature_tensor)
         token_matrix = prefix_embeddings.squeeze(0).detach().cpu().numpy()
 
-        # === Retrieve top-k similar interventions ===
+        # FAISS Retrieval
         results = retrieve_similar_vectors(token_matrix, k=3)
         retrieved_interventions = [
             meta.get("intervention") for _, meta, _ in results
             if meta.get("intervention") and meta.get("intervention").strip().lower() not in {"", "none", "driver alert"}
         ]
+        context = (
+            "Previously suggested interventions for similar scenarios: "
+            + "; ".join(retrieved_interventions) + ". "
+            if retrieved_interventions else ""
+        )
 
-        # === Build context string with retrieved interventions ===
-        if retrieved_interventions:
-            context = "Previously suggested interventions for similar scenarios: " + "; ".join(retrieved_interventions) + ". "
-        else:
-            context = ""
+        prompt = f"""{context}
+You are an intelligent in-cabin assistant.
 
-        # === Build prompt with context + fatigue levels ===
-        prompt = f"""
-        {context}
-        You are an intelligent in-cabin assistant.
+Fatigue levels:
+- Camera: {fatigue_levels[0]}
+- Steering: {fatigue_levels[1]}
+- Lane: {fatigue_levels[2]}
 
-        Fatigue levels:
-        - Camera: {fatigue_levels[0]}
-        - Steering: {fatigue_levels[1]}
-        - Lane: {fatigue_levels[2]}
+Based on the above driver state and past examples, suggest an intervention to keep the driver alert.
 
-        Based on the above driver state and past examples, suggest an intervention to keep the driver alert.
+⚠️ IMPORTANT: You must output in this fixed format — no extra text.
 
-        ⚠️ IMPORTANT: You must output in this fixed format — no extra text.
+Fan: Level X      ← X is a number like 1, 2, or 3  
+Music: On/Off  
+Vibration: On/Off  
+Reason: 
 
-        Fan: Level X      ← X is a number like 1, 2, or 3  
-        Music: On/Off  
-        Vibration: On/Off  
-        Reason: 
+Example output:
+Fan: Level 2  
+Music: On  
+Vibration: Off  
+Reason: High blink rate and PERCLOS indicate moderate drowsiness.
 
-        Example output:
-        Fan: Level 2  
-        Music: On  
-        Vibration: Off  
-        Reason: High blink rate and PERCLOS indicate moderate drowsiness.
-
-        Now, provide your intervention:
-        """.strip()
+Now, provide your intervention:""".strip()
 
         inputs = self.tokenizer(
             prompt,
@@ -153,10 +157,12 @@ class LLMNode(Node):
                 pad_token_id=self.tokenizer.pad_token_id
             )
 
-        response = self.tokenizer.decode(output[0, self.PREFIX_TOKEN_COUNT:], skip_special_tokens=True)
+        response = self.tokenizer.decode(output[0, self.PREFIX_TOKEN_COUNT:], skip_special_tokens=True).strip()
 
-        # === Update FAISS DB with new embedding and intervention ===
-        runtime_add(token_matrix, intervention=response)
+        if self.is_valid_intervention(response):
+            runtime_add(token_matrix, intervention=response)
+        else:
+            self.get_logger().warn("Generated response did not match required format. Skipping FAISS update.")
 
         return response
 
