@@ -14,9 +14,10 @@ class PrefixVectorDB:
 
         if os.path.exists(index_path):
             self.index = faiss.read_index(index_path)
+            self.base_index = self.index.index if hasattr(self.index, 'index') else self.index
         else:
-            self.index = faiss.IndexFlatL2(dim)
-            self.index = faiss.IndexIDMap(self.index)
+            self.base_index = faiss.IndexFlatL2(dim)
+            self.index = faiss.IndexIDMap(self.base_index)
 
         if os.path.exists(metadata_path):
             with open(metadata_path, 'rb') as f:
@@ -49,7 +50,12 @@ class PrefixVectorDB:
                 if idx == -1:
                     continue
                 neighbor = self.metadata.get(int(idx), {})
-                cosine_dist = self.cosine_distance(vector, self.index.reconstruct(int(idx)))
+                # Use base_index (IndexFlatL2) for reconstruct
+                try:
+                    reconstructed = self.base_index.reconstruct(int(idx))
+                    cosine_dist = self.cosine_distance(vector, reconstructed)
+                except Exception as e:
+                    continue  # Skip if reconstruction fails
                 if neighbor.get("intervention") == intervention and cosine_dist < 0.05:
                     return  # Skip duplicate
 
@@ -93,14 +99,11 @@ class PrefixVectorDB:
             results.append((int(i), self.metadata.get(int(i), {}), float(d)))
         return results
 
-
 # === Runtime Inference ===
-
 def runtime_add(token_matrix: np.ndarray, intervention: str):
     db = PrefixVectorDB()
     db.add_vector(token_matrix, intervention, source='inference')
     db.save()
-
 
 def retrieve_similar_vectors(token_matrix: np.ndarray, k=5):
     db = PrefixVectorDB()
