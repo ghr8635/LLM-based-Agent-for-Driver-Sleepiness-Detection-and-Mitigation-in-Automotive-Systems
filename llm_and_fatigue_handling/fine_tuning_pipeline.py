@@ -1,12 +1,26 @@
+import os
+from huggingface_hub import login
+
+# === Step 1: Authenticate and configure PEFT compatibility ===
+HUGGINGFACE_TOKEN = os.environ.get("HUGGINGFACE_TOKEN")
+if HUGGINGFACE_TOKEN is None:
+    raise ValueError("HUGGINGFACE_TOKEN environment variable not set.")
+
+# Log in explicitly
+login(token=HUGGINGFACE_TOKEN)
+
+# Enable internal config fetching for PEFT + Transformers
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+
+# === Continue with rest of training pipeline ===
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, BitsAndBytesConfig, TrainerCallback
 from peft import LoraConfig, get_peft_model, TaskType
-import input_process  # Must contain load_csv_dataset, SensorTextDataset, custom_collate
+import input_process
 from model_wrapper_with_mlp_adapter import FeaturePrefixAdapter, PrefixLLaMAModel
-from faiss_vd import PrefixVectorDB  # ✅ Vector DB
+from faiss_vd import PrefixVectorDB
 import random
 import numpy as np
-import os
 import shutil
 
 # === Configuration ===
@@ -17,7 +31,6 @@ PREFIX_TOKEN_COUNT = 5
 MAX_LENGTH = 256
 BATCH_SIZE = 2
 
-# === Directories ===
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, "dummy_data.csv")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
@@ -29,10 +42,7 @@ random.seed(42)
 np.random.seed(42)
 torch.manual_seed(42)
 
-# === Token ===
-HUGGINGFACE_TOKEN = os.environ.get("HUGGINGFACE_TOKEN")
-
-# === Loss Logger Callback ===
+# === Callback ===
 class LossLoggerCallback(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs is not None and 'loss' in logs:
@@ -40,9 +50,6 @@ class LossLoggerCallback(TrainerCallback):
                 f.write(f"{state.global_step},{logs['loss']:.4f}\n")
 
 def train():
-    if HUGGINGFACE_TOKEN is None:
-        raise ValueError("HUGGINGFACE_TOKEN environment variable not set.")
-
     # === 1. Load Tokenizer ===
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_NAME,
@@ -92,25 +99,24 @@ def train():
     features, fatigue_levels, responses = input_process.load_csv_dataset(CSV_PATH)
     dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer, PREFIX_TOKEN_COUNT)
 
-    # === ✅ 5.1 Save Prefix Embeddings to Vector DB ===
+    # === 5.1 Save Prefix Embeddings to Vector DB ===
     print("Extracting and saving prefix vectors to FAISS database...")
     db = PrefixVectorDB()
     adapter.eval()
-
     for i in range(len(dataset)):
         item = dataset[i]
         feature_tensor = item["features"].unsqueeze(0).to(dtype=torch.float32)
-        intervention = responses[i]  # Get original ground truth response
+        intervention = responses[i]
 
         with torch.no_grad():
-            token_matrix = adapter(feature_tensor).squeeze(0).cpu().numpy()  # Shape: [5, 4096]
+            token_matrix = adapter(feature_tensor).squeeze(0).cpu().numpy()
 
         db.add_vector(token_matrix, intervention, source='fine_tuning')
 
     db.save()
     print("✅ Vector database populated with prefix embeddings.")
 
-    # === 6. Training Arguments ===
+    # === 6. Training Args ===
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=BATCH_SIZE,
@@ -146,7 +152,7 @@ def train():
     torch.save(adapter.state_dict(), os.path.join(FINAL_MODEL_DIR, "prefix_adapter.pth"))
 
     with open(os.path.join(FINAL_MODEL_DIR, "config.txt"), "w") as f:
-        f.write(f"Model: {MODEL_NAME}\nEpochs: 3\nBatch size: {BATCH_SIZE}\nPrefix shape: ({PREFIX_TOKEN_COUNT}, {EMBEDDING_DIM})")
+        f.write(f"Model: {MODEL_NAME}\nEpochs: 1\nBatch size: {BATCH_SIZE}\nPrefix shape: ({PREFIX_TOKEN_COUNT}, {EMBEDDING_DIM})")
 
 if __name__ == "__main__":
     train()

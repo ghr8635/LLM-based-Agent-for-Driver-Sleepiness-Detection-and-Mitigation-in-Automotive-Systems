@@ -1,4 +1,4 @@
-builtin_interfaces/Time stamp
 sensor_msgs/Image image
-float32 steering_angle
-float32 lane_offset
+float64 steering_angle
+float64 lane_offset
+builtin_interfaces/Time camera_time

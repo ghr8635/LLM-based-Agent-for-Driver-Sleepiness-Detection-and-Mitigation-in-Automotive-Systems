@@ -1,60 +1,57 @@
-# sync_node.py
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float64
+from geometry_msgs.msg import Vector3
 from cv_bridge import CvBridge
-from custom_msgs.msg import SyncedData
-import time
 from collections import deque
+from custom_msgs.msg import SyncedOutput  # Assuming this is your custom msg
 
 class SyncNode(Node):
     def __init__(self):
         super().__init__('sync_node')
         self.bridge = CvBridge()
 
-        self.steering_buffer = deque(maxlen=10)
-        self.lane_buffer = deque(maxlen=10)
-        self.last_steering = None
-        self.last_lane = None
+        # Buffers and state
+        self.image_buffer = deque(maxlen=10)
+        self.latest_driving_data = None
 
-        self.sub_camera = self.create_subscription(Image, '/ir_camera/image_raw', self.ir_callback, 10)
-        self.sub_steering = self.create_subscription(Float64, '/vehicle/steering_angle', self.steering_callback, 10)
-        self.sub_lane = self.create_subscription(Float64, '/lane/offset', self.lane_callback, 10)
+        # Subscribers
+        self.create_subscription(Image, '/camera/image_raw', self.camera_callback, 10)
+        self.create_subscription(Vector3, '/driving_info', self.driving_callback, 10)
 
-        self.pub_synced = self.create_publisher(SyncedData, '/synced_data', 10)
+        # Publisher
+        self.publisher = self.create_publisher(SyncedOutput, '/synced_output', 10)
 
-    def steering_callback(self, msg):
+        self.get_logger().info("Sync Node with Vector3 driving info is running.")
+
+    def camera_callback(self, msg):
         now = self.get_clock().now().to_msg()
-        self.last_steering = (msg.data, now)
-        self.steering_buffer.append((msg.data, now))
+        self.image_buffer.append((msg, now))
 
-    def lane_callback(self, msg):
-        now = self.get_clock().now().to_msg()
-        self.last_lane = (msg.data, now)
-        self.lane_buffer.append((msg.data, now))
+    def driving_callback(self, msg):
+        # Store latest values
+        self.latest_driving_data = {
+            'steering_angle': msg.steering_angle,
+            'lane_offset': msg.lane_offset
+        }
 
-    def ir_callback(self, msg):
-        cam_time = self.get_clock().now()
+        # Proceed only if we have at least one image
+        if not self.image_buffer:
+            self.get_logger().warn("No image available to sync with driving info.")
+            return
 
-        # Select steering and lane based on most recent available
-        if self.steering_buffer and self.lane_buffer:
-            steering = self.steering_buffer[-1][0] if self.last_steering else 0.0
-            lane = self.lane_buffer[-1][0] if self.last_lane else 0.0
-        else:
-            # Fallback to last known
-            steering = self.last_steering[0] if self.last_steering else 0.0
-            lane = self.last_lane[0] if self.last_lane else 0.0
+        # Get the latest image
+        image_msg, image_time = self.image_buffer[-1]
 
-        # Construct and publish fused message
-        fused_msg = SyncedData()
-        fused_msg.image = msg
-        fused_msg.steering_angle = steering
-        fused_msg.lane_offset = lane
-        fused_msg.camera_time = cam_time.to_msg()
+        # Build and publish fused message
+        fused_msg = SyncedOutput()
+        fused_msg.image = image_msg
+        fused_msg.steering_angle = self.latest_driving_data['steering_angle']
+        fused_msg.lane_offset = self.latest_driving_data['lane_offset']
+        fused_msg.camera_time = image_time  # From PC time at image reception
 
-        self.pub_synced.publish(fused_msg)
-
+        self.publisher.publish(fused_msg)
+        self.get_logger().info("Published synced data.")
 
 def main(args=None):
     rclpy.init(args=args)
