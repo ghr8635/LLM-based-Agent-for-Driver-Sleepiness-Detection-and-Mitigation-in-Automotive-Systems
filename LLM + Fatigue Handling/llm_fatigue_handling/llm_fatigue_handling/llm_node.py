@@ -17,6 +17,7 @@ class LLMNode(Node):
         # Parameters/config
         self.MODEL_ID = "meta-llama/Llama-2-7b-hf"
         self.MODEL_DIR = "/content/drive/MyDrive/llm/LLM-based-Agent-for-Driver-Sleepiness-Detection-and-Mitigation-in-Automotive-Systems/llm_and_fatigue_handling/llama_prefix_final_model"
+        self.HF_TOKEN = "your hugging face access token here"  # Declare token explicitly
         self.FEATURE_DIM = 9
         self.EMBEDDING_DIM = 4096
         self.PREFIX_TOKEN_COUNT = 5
@@ -24,27 +25,40 @@ class LLMNode(Node):
         self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
         # Load models/tokenizer once at node init
-        self.bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True
-        )
-
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.MODEL_DIR)
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+            # === Tokenizer ===
+            self.tokenizer = AutoTokenizer.from_pretrained(self.MODEL_ID, token=self.HF_TOKEN)
+            self.tokenizer.pad_token = self.tokenizer.pad_token or self.tokenizer.eos_token
+            self.tokenizer.padding_side = "right"
 
+            # === Quantization Config ===
+            self.bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True
+            )
+
+            # === Base Model ===
             base_model = AutoModelForCausalLM.from_pretrained(
                 self.MODEL_ID,
                 device_map="auto",
+                trust_remote_code=True,
+                token=self.HF_TOKEN,
                 quantization_config=self.bnb_config,
-                token=os.environ.get("HUGGINGFACE_TOKEN")
+                low_cpu_mem_usage=True
             )
 
-            self.llama_model = PeftModel.from_pretrained(base_model, self.MODEL_DIR, device_map="auto")
+            # === LoRA Adapter ===
+            self.llama_model = PeftModel.from_pretrained(
+                base_model,
+                self.MODEL_DIR,
+                device_map="auto",
+                use_auth_token=False
+            )
             self.llama_model.eval()
 
+            # === Prefix Adapter ===
             self.adapter = FeaturePrefixAdapter(
                 input_dim=self.FEATURE_DIM,
                 hidden_dim=256,
@@ -55,6 +69,7 @@ class LLMNode(Node):
             target_dtype = next(self.llama_model.parameters()).dtype
             self.adapter = self.adapter.to(dtype=target_dtype, device=self.DEVICE)
             self.adapter.eval()
+
         except Exception as e:
             self.get_logger().error(f"Error initializing model: {e}")
             raise
@@ -104,29 +119,29 @@ class LLMNode(Node):
         )
 
         prompt = f"""{context}
-You are an intelligent in-cabin assistant.
-
-Fatigue levels:
-- Camera: {fatigue_levels[0]}
-- Steering: {fatigue_levels[1]}
-- Lane: {fatigue_levels[2]}
-
-Based on the above driver state and past examples, suggest an intervention to keep the driver alert.
-
-⚠️ IMPORTANT: You must output in this fixed format — no extra text.
-
-Fan: Level X      ← X is a number like 1, 2, or 3  
-Music: On/Off  
-Vibration: On/Off  
-Reason: 
-
-Example output:
-Fan: Level 2  
-Music: On  
-Vibration: Off  
-Reason: High blink rate and PERCLOS indicate moderate drowsiness.
-
-Now, provide your intervention:""".strip()
+          You are an intelligent in-cabin assistant.
+          
+          Fatigue levels:
+          - Camera: {fatigue_levels[0]}
+          - Steering: {fatigue_levels[1]}
+          - Lane: {fatigue_levels[2]}
+          
+          Based on the above driver state and past examples, suggest an intervention to keep the driver alert.
+          
+          ⚠️ IMPORTANT: You must output in this fixed format — no extra text.
+          
+          Fan: Level X      ← X is a number like 1, 2, or 3  
+          Music: On/Off  
+          Vibration: On/Off  
+          Reason: 
+          
+          Example output:
+          Fan: Level 2  
+          Music: On  
+          Vibration: Off  
+          Reason: High blink rate and PERCLOS indicate moderate drowsiness.
+          
+          Now, provide your intervention:""".strip()
 
         inputs = self.tokenizer(
             prompt,
