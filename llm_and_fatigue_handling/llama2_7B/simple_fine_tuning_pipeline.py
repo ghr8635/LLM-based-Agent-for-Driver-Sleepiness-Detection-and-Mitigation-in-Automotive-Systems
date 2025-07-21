@@ -11,7 +11,7 @@ os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, BitsAndBytesConfig, TrainerCallback
 from peft import LoraConfig, get_peft_model, TaskType
-import input_process
+import simple_input_process
 from simple_faiss_vd import PrefixVectorDB
 import random
 import numpy as np
@@ -20,8 +20,8 @@ import shutil
 # === Configuration ===
 MODEL_NAME = "meta-llama/Llama-2-7b-hf"
 FEATURE_DIM = 9
-MAX_LENGTH = 256
-BATCH_SIZE = 2
+MAX_LENGTH = 192
+BATCH_SIZE = 1
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, "dummy_data.csv")
@@ -79,8 +79,8 @@ def train():
     full_model = get_peft_model(base_model, lora_config)
 
     # === 4. Load Dataset ===
-    features, fatigue_levels, responses = input_process.load_csv_dataset(CSV_PATH)
-    dataset = input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer)
+    features, fatigue_levels, responses = simple_input_process.load_csv_dataset(CSV_PATH)
+    dataset = simple_input_process.SensorTextDataset(features, fatigue_levels, responses, tokenizer, prefix_token_count=0)
 
     # === 5. Save Feature Vectors to FAISS DB ===
     print("Extracting and saving 9D feature vectors to FAISS database...")
@@ -95,16 +95,17 @@ def train():
 
     # === 6. Training Args ===
     training_args = TrainingArguments(
-        output_dir=OUTPUT_DIR,
-        per_device_train_batch_size=BATCH_SIZE,
-        num_train_epochs=0.1,
-        learning_rate=5e-5,
-        save_strategy="no",
-        logging_dir=LOG_DIR,
-        logging_steps=10,
-        report_to="tensorboard",
-        bf16=True
-    )
+      output_dir=OUTPUT_DIR,
+      per_device_train_batch_size=BATCH_SIZE,
+      num_train_epochs=0.01,
+      learning_rate=5e-5,
+      save_strategy="no",
+      logging_dir=LOG_DIR,
+      logging_steps=10,
+      report_to="tensorboard",
+      bf16=True,
+      remove_unused_columns=False  # <-- 🔥 CRITICAL FIX
+  )
 
     # === 7. Trainer ===
     trainer = Trainer(
@@ -112,7 +113,7 @@ def train():
         args=training_args,
         train_dataset=dataset,
         tokenizer=tokenizer,
-        data_collator=input_process.custom_collate,
+        data_collator=simple_input_process.custom_collate,
         callbacks=[LossLoggerCallback()]
     )
 
