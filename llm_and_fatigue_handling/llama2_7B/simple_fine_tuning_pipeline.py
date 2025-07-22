@@ -24,7 +24,7 @@ MAX_LENGTH = 192
 BATCH_SIZE = 1
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(BASE_DIR, "captured_data.csv")
+CSV_PATH = os.path.join(BASE_DIR, "captured_data_csv.csv")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 OUTPUT_DIR = os.path.join(BASE_DIR, "llama_prefix_finetune")
 FINAL_MODEL_DIR = os.path.join(BASE_DIR, "llama_prefix_final_model")
