@@ -19,7 +19,7 @@ MAX_LENGTH = 256
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # === Tokenizer ===
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=HUGGINGFACE_TOKEN)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, token=HUGGINGFACE_TOKEN)
 tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
 tokenizer.padding_side = "right"
 
@@ -31,6 +31,7 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_quant_type="nf4"
 )
 
+# === Load Base Model ===
 base_model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     device_map="auto",
@@ -39,6 +40,9 @@ base_model = AutoModelForCausalLM.from_pretrained(
     quantization_config=bnb_config,
     low_cpu_mem_usage=True
 )
+
+# === Fix: Resize embeddings to match tokenizer size
+base_model.resize_token_embeddings(len(tokenizer))
 
 # === Load LoRA adapter ===
 llama_model = PeftModel.from_pretrained(
@@ -54,7 +58,7 @@ features = [24, 8, 0.38, 0.23, 96.0, 0.4, 0.21, 8.0, 1.3]  # example numeric fea
 fatigue_levels = ["low", "medium", "medium"]
 
 # === FAISS Retrieval (Optional) ===
-feature_vector = np.array(features, dtype=np.float32)  # shape = (9,)
+feature_vector = np.array(features, dtype=np.float32)
 results = retrieve_similar_vectors(feature_vector, k=3)
 retrieved_interventions = [
     meta.get("intervention") for _, meta, _ in results
@@ -85,9 +89,9 @@ Driving behavior features:
 - Steering reversal rate: {features[7]:.1f} per minute
 - Steering angle variability: {features[8]:.2f}°
 
-{context}Based on the above driver state and past examples, suggest an intervention to keep the driver alert.
+{context}Based on the above driver state and past examples, suggest **only one** intervention to keep the driver alert.
 
-⚠️ IMPORTANT: You must output in this fixed format — no extra text.
+⚠️ IMPORTANT: You must output in this fixed format — no extra text, no repetition.
 
 Fan: Level X      ← X is a number like 1, 2, or 3  
 Music: On/Off  
@@ -100,7 +104,7 @@ Music: On
 Vibration: Off  
 Reason: High blink rate and PERCLOS indicate moderate drowsiness.
 
-Now, provide your intervention:
+Now, provide your single final intervention and stop.
 """.strip()
 
 # === Tokenize ===
@@ -118,17 +122,27 @@ with torch.no_grad():
         temperature=0.7,
         top_k=50,
         top_p=0.9,
-        pad_token_id=tokenizer.pad_token_id
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id  # Stops at EOS
     )
 
+# === Decode
 response = tokenizer.decode(output[0], skip_special_tokens=True)
 
-# === Postprocess (optional): extract from 'Fan:' onward
-intervention_start = response.find("Fan:")
-final_response = response[intervention_start:].strip() if intervention_start != -1 else response.strip()
+# === Postprocess: Extract only the first 'Fan:' block to remove repetition
+if response.count("Fan:") > 1:
+    first_block = response.split("Fan:")[1]
+    if "Reason:" in first_block:
+        reason_part = first_block.split("Reason:")
+        first_block = reason_part[0] + "Reason:" + reason_part[1].split("\n")[0]
+    final_response = "Fan:" + first_block.strip()
+else:
+    intervention_start = response.find("Fan:")
+    final_response = response[intervention_start:].strip() if intervention_start != -1 else response.strip()
 
+# === Output
 print("\n=== Generated Intervention ===")
 print(final_response)
 
-# === Save to vector DB ===
+# === Save to vector DB
 runtime_add(feature_vector, intervention=final_response)
