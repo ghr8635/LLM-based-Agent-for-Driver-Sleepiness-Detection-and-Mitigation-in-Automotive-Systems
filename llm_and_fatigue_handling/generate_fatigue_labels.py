@@ -3,7 +3,12 @@ import random
 
 # Mapping fatigue levels to a case number
 def get_case(cam, steer, lane):
-    key = (cam.lower(), steer.lower(), lane.lower())
+    # Ensure case-insensitive comparison and strip any leading/trailing spaces
+    cam = str(cam).strip().lower()
+    steer = str(steer).strip().lower()
+    lane = str(lane).strip().lower()
+
+    key = (cam, steer, lane)
     case_map = {
         ('low', 'low', 'low'): 1,
         ('low', 'moderate', 'moderate'): 2,
@@ -15,7 +20,17 @@ def get_case(cam, steer, lane):
         ('high', 'moderate', 'moderate'): 8,
         ('high', 'high', 'high'): 9,
     }
-    return case_map.get(key)
+
+    # First check the exact key
+    case = case_map.get(key)
+
+    # Fallback: use 'steer' value as 'lane' if exact key not found
+    if case is None:
+        fallback_key = (cam, steer, steer)
+        case = case_map.get(fallback_key)
+
+    return case
+
 
 # Interventions mapping for each case
 intervention_map = {
@@ -98,12 +113,14 @@ templates = {
 }
 
 # Load input
-df = pd.read_csv("input.csv")
+df = pd.read_csv(r"C:\llm project\LLM-based-Agent-for-Driver-Sleepiness-Detection-and-Mitigation-in-Automotive-Systems\llm_and_fatigue_handling\llama2_7B\captured_data.csv")
 
 # Fill in fan, music, vibration, reason
 def generate_reason(row):
     case = get_case(row['fatigue_camera_level'], row['fatigue_steering_level'], row['fatigue_lane_level'])
+    
     if not case:
+        print("now case found")
         return pd.Series(["unknown", "unknown", "unknown", "Fatigue case unrecognized."])
 
     fan, music, vibration = intervention_map[case]
@@ -111,8 +128,9 @@ def generate_reason(row):
     reason = template(row)
     return pd.Series([fan, music, vibration, reason])
 
+
 df[['fan', 'music', 'vibration', 'reason']] = df.apply(generate_reason, axis=1)
 
 # Save output
-df.to_csv("output.csv", index=False)
+df.to_csv("update_data_csv.csv", index=False)
 print("Generated output.csv with interventions and reasons.")
