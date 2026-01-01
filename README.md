@@ -11,7 +11,7 @@ Driver fatigue is one of the leading causes of road accidents globally, emphasiz
 
 2. Integrate multimodal embeddings (vision, audio, driving data) using Transformer architectures.
 
-3. Utilize LLMs (GPT-4, LLaMA 2) for intelligent decision-making and tailored interventions.
+3. Utilize LLMs (LLaMA 2) for intelligent decision-making and tailored interventions.
 
 4. Evaluate system effectiveness, reliability, and user satisfaction.
    
